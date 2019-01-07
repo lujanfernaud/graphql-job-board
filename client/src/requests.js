@@ -1,86 +1,52 @@
+import { ApolloClient, ApolloLink, HttpLink, InMemoryCache } from 'apollo-boost'
+import gql from 'graphql-tag'
 import { getAccessToken, isLoggedIn } from "./auth";
 
 const endpointURL = 'http://localhost:9000/graphql'
 
-async function graphqlRequest(query, variables={}) {
-  const request = {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({query, variables})
-  }
-
+const authLink = new ApolloLink((operation, forward) => {
   if (isLoggedIn()) {
-    request.headers['authorization'] = 'Bearer ' + getAccessToken()
+    operation.setContext({
+      headers: {
+        'authorization': 'Bearer ' + getAccessToken()
+      }
+    })
   }
 
-  const response = await fetch(endpointURL, request)
+  return forward(operation)
+})
 
-  const responseBody = await response.json()
+const client = new ApolloClient({
+  link: ApolloLink.from([
+    authLink,
+    new HttpLink({uri: endpointURL})
+  ]),
+  cache: new InMemoryCache()
+})
 
-  if (responseBody.errors) {
-    const messages = responseBody.errors.map(error => `\n- ${error.message}`)
-
-    throw new Error(`GraphQL Error:${messages}`)
+const jobDetailFragment = gql`
+  fragment JobDetail on Job {
+    id
+    title
+    description
+    company {
+      id
+      name
+    }
   }
+`
 
-  return responseBody.data
-}
-
-export async function loadJobs() {
-  const query = `{
-    jobs {
-      id
-      title
-      company {
-        id
-        name
-      }
-    }
-  }`
-
-  const { jobs } = await graphqlRequest(query)
-
-  return jobs
-}
-
-export async function loadJob(id) {
-  const query = `query JobQuery($id: ID!) {
-    job(id: $id) {
-      id
-      title
-      description
-      company {
-        id
-        name
-      }
-    }
-  }`
-
-  const { job } = await graphqlRequest(query, {id})
-
-  return job
-}
-
-export async function createJob(input) {
-  const mutation = `mutation CreateJob($input: CreateJobInput) {
+const createJobMutation = gql`
+  mutation CreateJob($input: CreateJobInput) {
     job: createJob(input: $input) {
-      id
-      title
-      description
-      company {
-        id
-        name
-      }
+      ...JobDetail
     }
-  }`
+  }
+  ${jobDetailFragment}
+`
 
-  const {job} = await graphqlRequest(mutation, {input})
-
-  return job
-}
-
-export async function loadCompany(id) {
-  const query = `query CompanyQuery($id: ID!) {
+const companyQuery = gql`
+  query CompanyQuery($id: ID!) {
     company(id: $id) {
       id
       name
@@ -90,9 +56,71 @@ export async function loadCompany(id) {
         title
       }
     }
-  }`
+  }
+`
 
-  const { company } = await graphqlRequest(query, {id})
+const jobQuery = gql`
+  query JobQuery($id: ID!) {
+    job(id: $id) {
+      ...JobDetail
+    }
+  }
+  ${jobDetailFragment}
+`
+
+const jobsQuery = gql`
+  query JobsQuery {
+    jobs {
+      id
+      title
+      company {
+        id
+        name
+      }
+    }
+  }
+`
+
+export async function loadJobs() {
+  const { data: {jobs} } = await client.query({
+    query: jobsQuery,
+    fetchPolicy: 'no-cache'
+  })
+
+  return jobs
+}
+
+export async function loadJob(id) {
+  const { data: {job} } = await client.query({
+    query: jobQuery,
+    variables: {id}
+  })
+
+  return job
+}
+
+export async function createJob(input) {
+  const { data: {job} } = await client.mutate({
+    mutation: createJobMutation,
+    variables: {input},
+    update: (cache, {data}) => {
+      cache.writeQuery({
+        query: jobQuery,
+        variables: { id: data.job.id },
+        data
+      })
+    }
+  })
+
+  return job
+}
+
+export async function loadCompany(id) {
+  const { data: {company} } = await client.query({
+    query: companyQuery,
+    variables: {id},
+    fetchPolicy: 'no-cache'
+  })
 
   return company
 }
